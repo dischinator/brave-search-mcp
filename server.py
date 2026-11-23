@@ -24,6 +24,19 @@ logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s:
 log = logging.getLogger("web-search-mcp")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # sonst landet der API-Aufruf zusätzlich im Log
 
+
+class _IgnoreClosedSSE(logging.Filter):
+    """Unterdrückt harmloses Rauschen: Der Client schließt den GET-/mcp-SSE-Stream (Reconnect),
+    das MCP-SDK loggt dann 'Error in standalone SSE writer' mit anyio.ClosedResourceError."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if "standalone SSE writer" in record.getMessage() and record.exc_info:
+            return record.exc_info[0].__name__ != "ClosedResourceError"
+        return True
+
+
+logging.getLogger("mcp.server.streamable_http").addFilter(_IgnoreClosedSSE())
+
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_LANG = os.getenv("DEFAULT_LANGUAGE", "de")
