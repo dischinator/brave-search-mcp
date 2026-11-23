@@ -1,0 +1,9 @@
+services:
+  brave-search-mcp:
+    build: .
+    image: brave-search-mcp:latest
+    container_name: brave-search-mcp
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
