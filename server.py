@@ -74,7 +74,9 @@ def _parse_quota(headers: httpx.Headers) -> dict[str, Any] | None:
         if i < len(resets) and resets[i].isdigit():
             entry["reset_in_seconds"] = int(resets[i])
             entry["reset_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + int(resets[i])))
-        if isinstance(entry["limit"], int) and isinstance(entry["remaining"], int):
+        if entry["limit"] == 0:  # Guthaben-Tarife: Brave meldet 0 = kein festes Limit in diesem Fenster
+            entry.update(limit=None, remaining=None, unlimited=True)
+        elif isinstance(entry["limit"], int) and isinstance(entry["remaining"], int):
             entry["used"] = entry["limit"] - entry["remaining"]
         out.append(entry)
     return {"windows": out, "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "_ts": time.time()}
@@ -213,7 +215,8 @@ async def brave_quota(
     q = {k: v for k, v in brave.quota.items() if k != "_ts"}
     q["age_seconds"] = int(time.time() - brave.quota["_ts"])
     q["source"] = source
-    q["note"] = "Werte aus X-RateLimit-Headern; Dollar-Guthaben nur im Brave-API-Dashboard."
+    q["note"] = ("Werte aus X-RateLimit-Headern. unlimited=true heißt: kein festes Anfrage-Limit in diesem Zeitfenster, "
+                 "abgerechnet wird über das Guthaben. Das Dollar-Guthaben ist nur im Brave-API-Dashboard sichtbar.")
     return q
 
 

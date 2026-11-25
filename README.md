@@ -15,7 +15,7 @@ Jede Suche wird im Container-Log protokolliert (Anfrage, Parameter, Trefferzahl,
 docker compose logs -f brave-search-mcp
 ```
 
-`brave_quota` liest die `X-RateLimit-*`-Header der Brave API aus, denn einen eigenen Guthaben-Endpunkt gibt es nicht. Ohne `refresh` nimmt es die Werte der letzten Suche. Gibt es noch keine oder ist `refresh=true` gesetzt, startet es eine Testsuche, und die kostet 1 Anfrage. Das Dollar-Guthaben steht nur im [Brave-API-Dashboard](https://api-dashboard.search.brave.com).
+`brave_quota` liest die `X-RateLimit-*`-Header der Brave API aus, denn einen eigenen Guthaben-Endpunkt gibt es nicht. Ohne `refresh` nimmt es die Werte der letzten Suche. Gibt es noch keine oder ist `refresh=true` gesetzt, startet es eine Testsuche, und die kostet 1 Anfrage. Bei Guthaben-Tarifen meldet Brave für das Monatsfenster das Limit 0. Das Tool zeigt das als `unlimited: true`, denn es gibt dann kein festes Anfrage-Kontingent. Das Dollar-Guthaben steht nur im [Brave-API-Dashboard](https://api-dashboard.search.brave.com).
 
 ## Start
 
