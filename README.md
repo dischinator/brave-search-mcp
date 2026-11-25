@@ -5,7 +5,7 @@ MCP-Server (Streamable HTTP oder stdio) im Docker-Container, der eine Websuche �
 | Tool | Parameter |
 |---|---|
 | `web_search` | `query`, `num_results` (1–20), `page` (1–10), `language`, `country`, `site`, `freshness` (`day`, `week`, `month`, `year`), `safe_search` (`off`, `moderate`, `strict`) |
-| `brave_quota` | `refresh` (bool) – Limit, verbleibende Anfragen und Reset-Zeitpunkt je Zeitfenster (Sekunde/Monat) |
+| `brave_quota` | `calibrate_spent_usd` (Ausgaben laut Dashboard übernehmen), `refresh_rate_limits` (bool, kostet 1 Anfrage) |
 
 Jeder Treffer enthält `title`, `url`, `domain`, `snippet` und `age` (Alter der Seite, falls bekannt). Hat Brave die Anfrage korrigiert, steht die korrigierte Fassung in `corrected_query`.
 
@@ -15,7 +15,9 @@ Jede Suche wird im Container-Log protokolliert (Anfrage, Parameter, Trefferzahl,
 docker compose logs -f brave-search-mcp
 ```
 
-`brave_quota` liest die `X-RateLimit-*`-Header der Brave API aus, denn einen eigenen Guthaben-Endpunkt gibt es nicht. Ohne `refresh` nimmt es die Werte der letzten Suche. Gibt es noch keine oder ist `refresh=true` gesetzt, startet es eine Testsuche, und die kostet 1 Anfrage. Bei Guthaben-Tarifen meldet Brave für das Monatsfenster das Limit 0. Das Tool zeigt das als `unlimited: true`, denn es gibt dann kein festes Anfrage-Kontingent. Das Dollar-Guthaben steht nur im [Brave-API-Dashboard](https://api-dashboard.search.brave.com).
+`brave_quota` schätzt das verbleibende Guthaben des laufenden Monats, denn Brave hat keinen Guthaben-Endpunkt. Der Server zählt jede erfolgreiche Anfrage, rechnet sie mit `BRAVE_COST_PER_REQUEST` ab und vergleicht mit `BRAVE_MONTHLY_BUDGET`. Der Zähler liegt im Docker-Volume `usage-data` (`/data/usage.json`), übersteht also Neustarts, und beginnt zum UTC-Monatswechsel bei 0.
+
+Suchen mit demselben API-Key außerhalb dieses Servers zählt er nicht mit. Weicht die Schätzung vom [Brave-API-Dashboard](https://api-dashboard.search.brave.com) ab, das Tool einmal mit `calibrate_spent_usd` und dem Dashboard-Wert aufrufen (z.B. `0.10`).
 
 ## Start
 
@@ -57,6 +59,9 @@ Mit Token: `"--header", "Authorization:${AUTH_HEADER}"` an `args` anhängen und 
 | `BRAVE_API_KEY` | – | erforderlich |
 | `DEFAULT_LANGUAGE` / `DEFAULT_COUNTRY` | `de` / `de` | Standardwerte, wenn das Tool keine übergibt |
 | `MIN_INTERVAL_SECONDS` | `1.1` | Mindestabstand zwischen zwei Suchen (Free-Plan: 1 Anfrage/Sekunde) |
+| `BRAVE_COST_PER_REQUEST` | `0.005` | Preis pro Anfrage in USD für die Guthaben-Schätzung |
+| `BRAVE_MONTHLY_BUDGET` | `5.00` | Monatsbudget in USD (Free-Credits bzw. Spend-Limit) |
+| `USAGE_FILE` | `/data/usage.json` | Ablage des Verbrauchszählers |
 | `HTTP_TIMEOUT` | `15` | Sekunden pro API-Anfrage |
 | `MCP_TRANSPORT` | `http` | `http` oder `stdio` |
 | `MCP_PORT` | `8000` | |

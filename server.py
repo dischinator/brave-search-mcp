@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import html
+import json
 import logging
 import os
 import re
@@ -46,6 +47,9 @@ TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))
 AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN", "")
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
 PORT = int(os.getenv("MCP_PORT", "8000"))
+COST_PER_REQUEST = float(os.getenv("BRAVE_COST_PER_REQUEST", "0.005"))  # $5 pro 1.000 Anfragen
+MONTHLY_BUDGET = float(os.getenv("BRAVE_MONTHLY_BUDGET", "5.00"))  # Free-Credits bzw. Spend-Limit im Dashboard
+USAGE_FILE = os.getenv("USAGE_FILE", "/data/usage.json")
 
 FRESHNESS = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}
 TAG_RE = re.compile(r"<[^>]+>")
@@ -80,6 +84,74 @@ def _parse_quota(headers: httpx.Headers) -> dict[str, Any] | None:
             entry["used"] = entry["limit"] - entry["remaining"]
         out.append(entry)
     return {"windows": out, "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "_ts": time.time()}
+
+
+def _month() -> str:
+    return time.strftime("%Y-%m", time.gmtime())  # Brave rechnet nach UTC-Kalendermonat ab
+
+
+class UsageTracker:
+    """Zählt erfolgreiche API-Anfragen pro Monat und schätzt daraus die Kosten.
+    Persistiert in USAGE_FILE (Docker-Volume), damit Neustarts den Zähler nicht verlieren."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.persistent = True
+        self.state = {"month": _month(), "requests": 0, "spent_usd": 0.0}
+        try:
+            with open(path, encoding="utf-8") as f:
+                self.state.update(json.load(f))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as e:
+            log.warning("Verbrauchsdatei %s nicht lesbar (%s), starte bei 0.", path, e)
+        self._rollover()
+
+    def _rollover(self) -> None:
+        if self.state["month"] != _month():
+            self.state = {"month": _month(), "requests": 0, "spent_usd": 0.0}
+            self._save()
+
+    def _save(self) -> None:
+        if not self.persistent:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            tmp = f"{self.path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.state, f)
+            os.replace(tmp, self.path)
+        except OSError as e:
+            self.persistent = False
+            log.warning("Verbrauch kann nicht in %s gespeichert werden (%s), zähle nur im Speicher.", self.path, e)
+
+    def record(self) -> None:
+        self._rollover()
+        self.state["requests"] += 1
+        self.state["spent_usd"] = round(self.state["spent_usd"] + COST_PER_REQUEST, 6)
+        self._save()
+
+    def calibrate(self, spent_usd: float) -> None:
+        self._rollover()
+        self.state["spent_usd"] = round(spent_usd, 6)
+        self._save()
+
+    def snapshot(self) -> dict[str, Any]:
+        self._rollover()
+        spent = self.state["spent_usd"]
+        y, m = map(int, self.state["month"].split("-"))
+        return {
+            "month": self.state["month"],
+            "requests_counted": self.state["requests"],
+            "spent_estimate_usd": round(spent, 2),
+            "budget_usd": MONTHLY_BUDGET,
+            "remaining_estimate_usd": round(max(MONTHLY_BUDGET - spent, 0.0), 2),
+            "remaining_requests_estimate": max(int((MONTHLY_BUDGET - spent) / COST_PER_REQUEST + 1e-9), 0) if COST_PER_REQUEST > 0 else None,
+            "percent_used": round(spent / MONTHLY_BUDGET * 100, 1) if MONTHLY_BUDGET > 0 else None,
+            "cost_per_request_usd": COST_PER_REQUEST,
+            "resets_at": f"{y + m // 12:04d}-{m % 12 + 1:02d}-01T00:00:00Z",
+            "persistent": self.persistent,
+        }
 
 
 class BraveClient:
@@ -121,17 +193,19 @@ class BraveClient:
             except ValueError:
                 detail = r.text
             raise SearchError(f"Brave API Fehler {r.status_code}: {str(detail)[:300]}")
+        usage.record()
         if quota := _parse_quota(r.headers):
             self.quota = quota
             log.debug("Brave-Kontingent: %s", quota)
         return r.json()
 
 
+usage = UsageTracker(USAGE_FILE)
 brave = BraveClient()
 
 mcp = FastMCP(
     "web-search",
-    instructions="Websuche über die Brave Search API. Nutze web_search für aktuelle Informationen aus dem Web, brave_quota für das verbleibende API-Kontingent.",
+    instructions="Websuche über die Brave Search API. Nutze web_search für aktuelle Informationen aus dem Web, brave_quota für das verbleibende API-Guthaben.",
     host=HOST,
     port=PORT,
 )
@@ -198,26 +272,29 @@ async def web_search(
 
 @mcp.tool()
 async def brave_quota(
-    refresh: Annotated[bool, Field(description="True erzwingt eine neue Abfrage (verbraucht 1 Suchanfrage), sonst werden die Werte der letzten Suche genutzt")] = False,
+    calibrate_spent_usd: Annotated[float | None, Field(ge=0, description="Bisherige Ausgaben dieses Monats laut Brave-Dashboard ('This month ... spent'), um die Schätzung abzugleichen")] = None,
+    refresh_rate_limits: Annotated[bool, Field(description="True holt aktuelle Rate-Limits per Test-Suche (kostet 1 Anfrage)")] = False,
 ) -> dict[str, Any]:
-    """Liefert das aktuelle Brave-API-Kontingent (Limit, verbleibende Anfragen, Reset-Zeitpunkt je Zeitfenster).
+    """Liefert das geschätzte verbleibende Brave-API-Guthaben dieses Monats.
 
-    Brave bietet keinen eigenen Guthaben-Endpunkt; die Werte stammen aus den Rate-Limit-Headern
-    der Such-API. Das Dollar-Guthaben ist nur im Dashboard (api-dashboard.search.brave.com) sichtbar.
+    Brave bietet keinen Guthaben-Endpunkt. Der Server zählt deshalb seine eigenen erfolgreichen
+    Anfragen und rechnet sie mit BRAVE_COST_PER_REQUEST gegen BRAVE_MONTHLY_BUDGET. Anfragen mit
+    demselben Key außerhalb dieses Servers fehlen; mit calibrate_spent_usd lässt sich der Stand
+    an das Dashboard angleichen.
     """
-    source = "cache"
-    if refresh or brave.quota is None:
-        log.info("Kontingent-Abfrage über Test-Suche")
+    if calibrate_spent_usd is not None:
+        usage.calibrate(calibrate_spent_usd)
+        log.info("Verbrauch auf $%.2f kalibriert", calibrate_spent_usd)
+    if refresh_rate_limits:
+        log.info("Rate-Limit-Abfrage über Test-Suche")
         await brave.search({"q": "brave", "count": 1, "text_decorations": "false"})
-        source = "live"
-    if brave.quota is None:
-        raise SearchError("Brave API hat keine Rate-Limit-Header geliefert.")
-    q = {k: v for k, v in brave.quota.items() if k != "_ts"}
-    q["age_seconds"] = int(time.time() - brave.quota["_ts"])
-    q["source"] = source
-    q["note"] = ("Werte aus X-RateLimit-Headern. unlimited=true heißt: kein festes Anfrage-Limit in diesem Zeitfenster, "
-                 "abgerechnet wird über das Guthaben. Das Dollar-Guthaben ist nur im Brave-API-Dashboard sichtbar.")
-    return q
+    out = usage.snapshot()
+    if brave.quota:
+        out["rate_limits"] = brave.quota["windows"]
+        out["rate_limits_age_seconds"] = int(time.time() - brave.quota["_ts"])
+    out["note"] = ("Schätzung aus den über diesen Server gezählten Anfragen. Verbindlicher Stand im "
+                   "Brave-API-Dashboard; abweichende Werte mit calibrate_spent_usd übernehmen.")
+    return out
 
 
 class BearerAuthMiddleware:
