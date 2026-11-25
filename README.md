@@ -5,6 +5,7 @@ MCP-Server (Streamable HTTP oder stdio) im Docker-Container, der eine Websuche �
 | Tool | Parameter |
 |---|---|
 | `web_search` | `query`, `num_results` (1–20), `page` (1–10), `language`, `country`, `site`, `freshness` (`day`, `week`, `month`, `year`), `safe_search` (`off`, `moderate`, `strict`) |
+| `brave_quota` | `refresh` (bool) – Limit, verbleibende Anfragen und Reset-Zeitpunkt je Zeitfenster (Sekunde/Monat) |
 
 Jeder Treffer enthält `title`, `url`, `domain`, `snippet` und `age` (Alter der Seite, falls bekannt). Hat Brave die Anfrage korrigiert, steht die korrigierte Fassung in `corrected_query`.
 
@@ -13,6 +14,8 @@ Jede Suche wird im Container-Log protokolliert (Anfrage, Parameter, Trefferzahl,
 ```bash
 docker compose logs -f brave-search-mcp
 ```
+
+`brave_quota` liest die `X-RateLimit-*`-Header der Brave API aus, denn einen eigenen Guthaben-Endpunkt gibt es nicht. Ohne `refresh` nimmt es die Werte der letzten Suche. Gibt es noch keine oder ist `refresh=true` gesetzt, startet es eine Testsuche, und die kostet 1 Anfrage. Das Dollar-Guthaben steht nur im [Brave-API-Dashboard](https://api-dashboard.search.brave.com).
 
 ## Start
 

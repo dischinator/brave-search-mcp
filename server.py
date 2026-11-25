@@ -55,11 +55,37 @@ class SearchError(Exception):
     pass
 
 
+def _parse_quota(headers: httpx.Headers) -> dict[str, Any] | None:
+    """Wertet X-RateLimit-Limit/-Remaining/-Reset aus. Brave liefert je Zeitfenster einen Wert,
+    kommagetrennt in der Reihenfolge der X-RateLimit-Policy (z.B. '1;w=1, 2000;w=2592000')."""
+    split = lambda name: [v.strip() for v in headers.get(name, "").split(",") if v.strip()]
+    limits, remaining, resets = (split(f"x-ratelimit-{n}") for n in ("limit", "remaining", "reset"))
+    if not remaining:
+        return None
+    windows = [p.split("w=", 1)[1] if "w=" in p else None for p in split("x-ratelimit-policy")]
+    out: list[dict[str, Any]] = []
+    for i, rem in enumerate(remaining):
+        win = int(windows[i]) if i < len(windows) and windows[i] and windows[i].isdigit() else None
+        entry: dict[str, Any] = {
+            "window": {1: "second", 2592000: "month"}.get(win, f"{win}s" if win else f"#{i + 1}"),
+            "limit": int(limits[i]) if i < len(limits) and limits[i].isdigit() else None,
+            "remaining": int(rem) if rem.isdigit() else rem,
+        }
+        if i < len(resets) and resets[i].isdigit():
+            entry["reset_in_seconds"] = int(resets[i])
+            entry["reset_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + int(resets[i])))
+        if isinstance(entry["limit"], int) and isinstance(entry["remaining"], int):
+            entry["used"] = entry["limit"] - entry["remaining"]
+        out.append(entry)
+    return {"windows": out, "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "_ts": time.time()}
+
+
 class BraveClient:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._last = 0.0
         self._client: httpx.AsyncClient | None = None
+        self.quota: dict[str, Any] | None = None  # Kontingent aus den Headern der letzten Antwort
 
     def _http(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -93,8 +119,9 @@ class BraveClient:
             except ValueError:
                 detail = r.text
             raise SearchError(f"Brave API Fehler {r.status_code}: {str(detail)[:300]}")
-        if remaining := r.headers.get("x-ratelimit-remaining"):
-            log.debug("Brave-Kontingent übrig: %s", remaining)
+        if quota := _parse_quota(r.headers):
+            self.quota = quota
+            log.debug("Brave-Kontingent: %s", quota)
         return r.json()
 
 
@@ -102,7 +129,7 @@ brave = BraveClient()
 
 mcp = FastMCP(
     "web-search",
-    instructions="Websuche über die Brave Search API. Nutze web_search für aktuelle Informationen aus dem Web.",
+    instructions="Websuche über die Brave Search API. Nutze web_search für aktuelle Informationen aus dem Web, brave_quota für das verbleibende API-Kontingent.",
     host=HOST,
     port=PORT,
 )
@@ -165,6 +192,29 @@ async def web_search(
     if altered:
         out["corrected_query"] = altered
     return out
+
+
+@mcp.tool()
+async def brave_quota(
+    refresh: Annotated[bool, Field(description="True erzwingt eine neue Abfrage (verbraucht 1 Suchanfrage), sonst werden die Werte der letzten Suche genutzt")] = False,
+) -> dict[str, Any]:
+    """Liefert das aktuelle Brave-API-Kontingent (Limit, verbleibende Anfragen, Reset-Zeitpunkt je Zeitfenster).
+
+    Brave bietet keinen eigenen Guthaben-Endpunkt; die Werte stammen aus den Rate-Limit-Headern
+    der Such-API. Das Dollar-Guthaben ist nur im Dashboard (api-dashboard.search.brave.com) sichtbar.
+    """
+    source = "cache"
+    if refresh or brave.quota is None:
+        log.info("Kontingent-Abfrage über Test-Suche")
+        await brave.search({"q": "brave", "count": 1, "text_decorations": "false"})
+        source = "live"
+    if brave.quota is None:
+        raise SearchError("Brave API hat keine Rate-Limit-Header geliefert.")
+    q = {k: v for k, v in brave.quota.items() if k != "_ts"}
+    q["age_seconds"] = int(time.time() - brave.quota["_ts"])
+    q["source"] = source
+    q["note"] = "Werte aus X-RateLimit-Headern; Dollar-Guthaben nur im Brave-API-Dashboard."
+    return q
 
 
 class BearerAuthMiddleware:
