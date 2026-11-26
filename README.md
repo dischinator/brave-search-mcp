@@ -61,6 +61,7 @@ Mit Token: `"--header", "Authorization:${AUTH_HEADER}"` an `args` anhängen und 
 | `MIN_INTERVAL_SECONDS` | `1.1` | Mindestabstand zwischen zwei Suchen (Free-Plan: 1 Anfrage/Sekunde) |
 | `BRAVE_COST_PER_REQUEST` | `0.005` | Preis pro Anfrage in USD für die Guthaben-Schätzung |
 | `BRAVE_MONTHLY_BUDGET` | `5.00` | Monatsbudget in USD (Free-Credits bzw. Spend-Limit) |
+| `LOG_QUOTA_EVERY` | `10` | Geschätzten Guthaben-Stand alle N Anfragen ins Log schreiben, `0` = aus |
 | `USAGE_FILE` | `/data/usage.json` | Ablage des Verbrauchszählers |
 | `HTTP_TIMEOUT` | `15` | Sekunden pro API-Anfrage |
 | `MCP_TRANSPORT` | `http` | `http` oder `stdio` |

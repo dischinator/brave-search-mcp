@@ -50,6 +50,7 @@ PORT = int(os.getenv("MCP_PORT", "8000"))
 COST_PER_REQUEST = float(os.getenv("BRAVE_COST_PER_REQUEST", "0.005"))  # $5 pro 1.000 Anfragen
 MONTHLY_BUDGET = float(os.getenv("BRAVE_MONTHLY_BUDGET", "5.00"))  # Free-Credits bzw. Spend-Limit im Dashboard
 USAGE_FILE = os.getenv("USAGE_FILE", "/data/usage.json")
+LOG_QUOTA_EVERY = int(os.getenv("LOG_QUOTA_EVERY", "10"))  # Guthaben-Stand alle N Anfragen loggen, 0 = aus
 
 FRESHNESS = {"day": "pd", "week": "pw", "month": "pm", "year": "py"}
 TAG_RE = re.compile(r"<[^>]+>")
@@ -130,6 +131,11 @@ class UsageTracker:
         self.state["requests"] += 1
         self.state["spent_usd"] = round(self.state["spent_usd"] + COST_PER_REQUEST, 6)
         self._save()
+        if LOG_QUOTA_EVERY > 0 and self.state["requests"] % LOG_QUOTA_EVERY == 0:
+            snap = self.snapshot()
+            log.info("Brave-Guthaben (Schätzung %s): $%.2f von $%.2f verbraucht (%s%%), noch ca. $%.2f bzw. %s Anfragen, %d Anfragen gezählt",
+                     snap["month"], snap["spent_estimate_usd"], snap["budget_usd"], snap["percent_used"],
+                     snap["remaining_estimate_usd"], snap["remaining_requests_estimate"], snap["requests_counted"])
 
     def calibrate(self, spent_usd: float) -> None:
         self._rollover()
