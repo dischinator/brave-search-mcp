@@ -38,6 +38,19 @@ class _IgnoreClosedSSE(logging.Filter):
 
 logging.getLogger("mcp.server.streamable_http").addFilter(_IgnoreClosedSSE())
 
+
+class _HealthCheckToDebug(logging.Filter):
+    """Zugriffe auf /health (Docker-HEALTHCHECK alle 30 s) erscheinen nur noch bei LOG_LEVEL=DEBUG."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and args[2] == "/health":
+            return LOG_LEVEL == "DEBUG"
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_HealthCheckToDebug())
+
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
 BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_LANG = os.getenv("DEFAULT_LANGUAGE", "de")
