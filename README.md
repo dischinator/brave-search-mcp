@@ -4,10 +4,10 @@ MCP-Server (Streamable HTTP oder stdio) im Docker-Container, der eine Websuche �
 
 | Tool | Parameter |
 |---|---|
-| `web_search` | `query`, `num_results` (1–20), `page` (1–10), `language`, `country`, `site`, `freshness` (`day`, `week`, `month`, `year`), `safe_search` (`off`, `moderate`, `strict`) |
+| `web_search` | `query`, `num_results` (1–20), `page` (1–10), `language`, `country`, `site`, `freshness` (`day`, `week`, `month`, `year`), `safe_search` (`off`, `moderate`, `strict`), `extra_snippets` (bool, Default `true`) |
 | `brave_quota` | `calibrate_spent_usd` (Ausgaben laut Dashboard übernehmen), `refresh_rate_limits` (bool, kostet 1 Anfrage) |
 
-Jeder Treffer enthält `title`, `url`, `domain`, `snippet` und `age` (Alter der Seite, falls bekannt). Hat Brave die Anfrage korrigiert, steht die korrigierte Fassung in `corrected_query`.
+Jeder Treffer enthält `title`, `url`, `domain`, `snippet`, optional `extra_snippets` (bis zu 5 weitere Textausschnitte, falls verfügbar) und `age` (Alter der Seite, falls bekannt). Hat Brave die Anfrage korrigiert, steht die korrigierte Fassung in `corrected_query`.
 
 Jede Suche wird im Container-Log protokolliert (Anfrage, Parameter, Trefferzahl, Dauer, Fehler):
 

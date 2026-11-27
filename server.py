@@ -231,8 +231,9 @@ async def web_search(
     site: Annotated[str | None, Field(description="Suche auf eine Domain beschränken, z.B. 'heise.de'")] = None,
     freshness: Annotated[Literal["day", "week", "month", "year"] | None, Field(description="Nur Ergebnisse aus dem letzten Tag/Woche/Monat/Jahr")] = None,
     safe_search: Annotated[Literal["off", "moderate", "strict"], Field(description="Filter für nicht jugendfreie Inhalte")] = "moderate",
+    extra_snippets: Annotated[bool, Field(description="Bis zu 5 zusätzliche Textausschnitte pro Treffer mitliefern (mehr Kontext, mehr Tokens)")] = True,
 ) -> dict[str, Any]:
-    """Durchsucht das Web und liefert Titel, URL, Snippet und Alter der Treffer."""
+    """Durchsucht das Web und liefert Titel, URL, Snippet (plus optionale Zusatz-Snippets) und Alter der Treffer."""
     q = f"site:{site} {query}" if site else query
     lang = language or DEFAULT_LANG
     ctry = (country or DEFAULT_COUNTRY).upper()
@@ -245,6 +246,8 @@ async def web_search(
         "safesearch": safe_search,
         "text_decorations": "false",
     }
+    if extra_snippets:
+        params["extra_snippets"] = "true"
     if freshness:
         params["freshness"] = FRESHNESS[freshness]
 
@@ -257,16 +260,19 @@ async def web_search(
         log.warning("Suche fehlgeschlagen: %r nach %.1fs: %s", q, time.monotonic() - t0, e)
         raise
 
-    results = [
-        {
+    results = []
+    for it in (data.get("web") or {}).get("results", [])[:num_results]:
+        res: dict[str, Any] = {
             "title": _clean(it.get("title")),
             "url": it.get("url"),
             "domain": (it.get("meta_url") or {}).get("hostname"),
             "snippet": _clean(it.get("description")),
             "age": it.get("age"),
         }
-        for it in (data.get("web") or {}).get("results", [])[:num_results]
-    ]
+        extras = [c for c in (_clean(x) for x in it.get("extra_snippets") or []) if c]
+        if extras:
+            res["extra_snippets"] = extras
+        results.append(res)
     log.info("Suche fertig: %r, %d Treffer in %.1fs", q, len(results), time.monotonic() - t0)
 
     out: dict[str, Any] = {"query": q, "page": page, "results": results}
