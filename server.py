@@ -390,8 +390,8 @@ def main() -> None:
     if not BRAVE_API_KEY:
         log.warning("BRAVE_API_KEY nicht gesetzt – Suchen werden fehlschlagen.")
     if fetcher.FETCH_ENABLED:
-        log.info("fetch_url aktiv (max %d Bytes, %d Zeichen, Ports %s%s)", fetcher.FETCH_MAX_BYTES,
-                 fetcher.FETCH_MAX_CHARS, sorted(fetcher.FETCH_ALLOWED_PORTS),
+        log.info("fetch_url aktiv (max %d Bytes, %d Zeichen, Ports %s, Injection-Erkennung %s%s)", fetcher.FETCH_MAX_BYTES,
+                 fetcher.FETCH_MAX_CHARS, sorted(fetcher.FETCH_ALLOWED_PORTS), "an" if fetcher.FETCH_INJECTION_SCAN else "aus",
                  f", gesperrte Netze {[str(n) for n in fetcher.FETCH_BLOCKED_NETWORKS]}" if fetcher.FETCH_BLOCKED_NETWORKS else "")
         if fetcher.FETCH_INJECTION_TEST_URL:
             log.info("Prompt-Injection-Test aktiv unter %s", fetcher.FETCH_INJECTION_TEST_URL)
