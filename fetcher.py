@@ -282,45 +282,139 @@ def wrap_untrusted(text: str) -> tuple[str, str, str]:
 # Heuristische Erkennung von Prompt Injection
 # ---------------------------------------------------------------------------
 
-# Starke Merkmale: ein Treffer reicht. Schwache Merkmale kommen auch in normalen Artikeln über KI vor,
-# erst ab INJECTION_WEAK_THRESHOLD verschiedenen schwachen Merkmalen wird gewarnt.
+# Muster je Merkmal und Sprache (de, en, fr, es, it, nl, pl, Kernmuster für ru und zh), geprüft auf kleingeschriebenem Text.
+# Starke Merkmale: ein Treffer reicht. Verben stehen möglichst in Befehlsform, damit Berichte wie
+# "Autofahrer ignorierte die Anweisungen der Polizei" keinen Alarm auslösen.
+# Schwache Merkmale kommen auch in normalen Artikeln vor, erst ab INJECTION_WEAK_THRESHOLD
+# verschiedenen schwachen Merkmalen wird gewarnt.
 # Die Warnung nennt nur diese festen Bezeichnungen und nie Text der Seite, damit kein fremder Text
 # außerhalb der Marker landet.
-INJECTION_STRONG = [
-    ("Aufforderung, vorherige Anweisungen zu ignorieren",
-     r"\b(ignorier\w*|vergiss|vergessen|missacht\w*)\b[^.\n]{0,60}\banweisung"
-     r"|\b(ignore|disregard|forget|override)\b[^.\n]{0,60}\binstruction"),
-    ("als System-Nachricht getarnter Abschnitt",
-     r"\[/?(system|inst|admin|sys)\]|<\|?(system|im_start|im_end)\|?>|<</?sys>>"),
-    ("Nennung von Tool-Namen dieses Servers", r"\b(fetch_url|web_search|brave_quota)\b"),
-    ("Aufforderung, etwas vor dem Nutzer zu verschweigen oder ihn nicht zu fragen",
-     r"\b(erwähn|verrat|frag|informier|sag)\w*\b[^.\n]{0,40}\b(nutzer|benutzer|anwender)\w*\b[^.\n]{0,20}\bnicht\b"
-     r"|\b(nutzer|benutzer|anwender)\w*\b[^.\n]{0,20}\bnicht\b[^.\n]{0,20}\b(erwähn|verrat|mitteil|informier|frag)"
-     r"|\b(do not|don't|never|without)\b[^.\n]{0,30}\b(tell|mention|inform|reveal|ask|asking|notify)\w*\b[^.\n]{0,20}\buser"),
-    ("Vorgabe für den Wortlaut der Antwort",
-     r"\b(beginne|starte|schreibe)\b[^.\n]{0,20}\b(deine|die) antwort\b[^.\n]{0,30}\bmit\b"
-     r"|\b(start|begin|prefix)\b[^.\n]{0,20}\b(your )?(response|answer|reply)\b[^.\n]{0,20}\bwith\b"),
-    ("gefälschte Inhaltsmarker", r"externer_inhalt"),
+_S = r"[^.!?\n]"  # beliebige Zeichen innerhalb eines Satzes
+_USER = r"(nutzer|benutzer|anwender|user|utilisat|usuari|utent|gebruiker|użytkowni)\w*"
+
+INJECTION_STRONG: list[tuple[str, list[str]]] = [
+    ("Aufforderung, vorherige Anweisungen zu ignorieren", [
+        rf"\b(ignorier(e|en sie)?|vergiss|vergessen sie|missachte|verwirf)\b{_S}{{0,60}}\b(anweisung|instruktion|vorgabe|richtlinie)",
+        rf"\b(ignore|disregard|forget|override|bypass|discard)\b{_S}{{0,15}}\b(all|any|your|the|previous|prior|above|earlier|preceding|original|existing|those|these)\b"
+        rf"{_S}{{0,40}}\b(instructions?|guidance|guidelines?|directives?|system prompt|prompts?|programming|constraints)\b",
+        rf"\b(ignore|ignorez|oublie|oubliez)\b{_S}{{0,60}}\b(instructions|consignes|directives)\b",
+        rf"\b(ignora|ignore|olvida|olvide|omite|descarta)\b{_S}{{0,60}}\b(instrucciones|indicaciones|directivas)\b",
+        rf"\b(ignora|ignorate|dimentica|dimenticate|trascura)\b{_S}{{0,60}}\b(istruzioni|direttive)\b",
+        rf"\b(negeer|vergeet)\b{_S}{{0,60}}\b(instructies|aanwijzingen|opdrachten)\b",
+        rf"\b(zignoruj|ignoruj|zapomnij|pomiń)\b{_S}{{0,60}}\b(instrukcj|polece|wytyczn)\w*",
+        rf"\b(игнорируй|игнорируйте|забудь|забудьте|проигнорируй)\b{_S}{{0,30}}\b(все|всё|предыдущ|прежн|ваш|сво|тво|систем)\w*{_S}{{0,30}}(инструкц|указани|правил)",
+        r"(忽略|无视|忘记|忽视)[^。！？\n]{0,10}(之前|以前|上面|先前|所有|全部)[^。！？\n]{0,10}(指令|指示|说明|规则)",
+    ]),
+    ("angebliche neue Anweisungen von System, Betreiber oder Entwickler", [
+        rf"\b(neue|new|nouvelles?|nuevas?|nuove|nieuwe|nowe)\s+(anweisung|instruction|consigne|instruccion|instrucción|istruzion|instructie|instrukcj|polecen)\w*"
+        rf"{_S}{{0,40}}\b(system|admin|administrat|betreiber|entwickler|developer|operator|opérateur|développeur|desarrollador|sviluppatore|ontwikkelaar|beheerder|programist|anthropic|openai)",
+    ]),
+    ("als System-Nachricht getarnter Abschnitt", [
+        r"\[/?(system|inst|admin|sys)\]", r"<\|?(system|im_start|im_end)\|?>", r"<</?sys>>", r"</?system>",
+    ]),
+    ("Nennung von Tool-Namen dieses Servers", [r"\b(fetch_url|web_search|brave_quota)\b"]),
+    ("Aufforderung, etwas vor dem Nutzer zu verschweigen oder ihn nicht zu fragen", [
+        rf"\b(erwähn|verrat|frag|informier|sag)\w*\b{_S}{{0,40}}\b{_USER}{_S}{{0,20}}\bnicht\b",
+        rf"\b(nutzer|benutzer|anwender)\w*\b{_S}{{0,20}}\bnicht\b{_S}{{0,20}}\b(erwähn|verrat|mitteil|informier|frag)",
+        rf"\b(do not|don't|never|without|must not)\b{_S}{{0,30}}\b(tell|mention|inform|reveal|ask|notify|alert|disclose)\w*\b{_S}{{0,25}}\buser",
+        rf"(\bne\b|\bn'){_S}{{0,30}}\b(dire|dis|dites|mentionn|inform|révél|demand|prévien|préven)\w*{_S}{{0,30}}\butilisat",
+        rf"\bsans\b{_S}{{0,10}}\b(demander|prévenir|informer)\b{_S}{{0,20}}\butilisat",
+        rf"\bno\b{_S}{{0,20}}\b(digas|diga|menciones|mencione|informes|informe|reveles|revele|preguntes|pregunte|avises|avise)\b{_S}{{0,30}}\busuari",
+        rf"\bsin\b{_S}{{0,10}}\b(preguntar|avisar|informar|consultar)\b{_S}{{0,20}}\busuari",
+        rf"\bnon\b{_S}{{0,20}}\b(dir|menzion|inform|rivel|chied|avvis)\w*{_S}{{0,30}}\butent",
+        rf"\bsenza\b{_S}{{0,10}}\b(chiedere|avvisare|informare)\b{_S}{{0,20}}\butent",
+        rf"\b(vertel|meld|zeg|vraag|informeer)\w*\b{_S}{{0,30}}\bgebruiker{_S}{{0,30}}\b(niet|niets)\b",
+        rf"\bzonder\b{_S}{{0,20}}\bgebruiker{_S}{{0,20}}\b(vragen|informeren|melden)",
+        rf"\bnie\b{_S}{{0,20}}\b(mów|mow|informuj|wspominaj|pytaj|ujawniaj|zdradzaj)\w*{_S}{{0,30}}\bużytkowni",
+        rf"\bbez\b{_S}{{0,10}}\b(pytania|informowania)\b{_S}{{0,20}}\bużytkowni",
+        rf"\bне\b{_S}{{0,20}}(говори|сообщай|рассказывай|упоминай|спрашивай)\w*{_S}{{0,30}}пользовател",
+        r"不要[^。！？\n]{0,6}(告诉|通知|提及|询问)[^。！？\n]{0,6}用户",
+    ]),
+    ("Vorgabe, wie der Inhalt dargestellt oder bewertet werden soll", [
+        rf"\b(summarize|summarise|describe|present|portray|rate|review)\b{_S}{{0,40}}\bas (an? )?(extremely |very |highly |only |overwhelmingly |purely )?(positive|favou?rable|negative|flawless|the best)",
+        rf"\b(do not|don't|never)\b (mention|reveal|disclose|include|cite) (any |the )?(criticism|negative|drawbacks|downsides|competitors|these instructions|this instruction)",
+        rf"\b(fasse|beschreibe|stelle|bewerte)\b{_S}{{0,40}}\b(ausschließlich |nur |äußerst |sehr )?(positiv|negativ|als (das |die |den )?beste)",
+        rf"\b(erwähne|nenne)\b (keine|nicht die) (kritik|nachteile|negativ|konkurrenz)",
+        rf"\b(résume|résumez|décris|décrivez|présente|présentez)\b{_S}{{0,40}}\b(positi|favorable|négati)",
+        rf"\b(resume|describe|presenta)\b{_S}{{0,40}}\b(positiv|favorable|negativ)",
+        rf"\b(riassumi|descrivi|presenta)\b{_S}{{0,40}}\b(positiv|favorevol|negativ)",
+        rf"\b(vat|beschrijf|presenteer)\b{_S}{{0,40}}\b(positief|negatief)",
+        rf"\b(podsumuj|opisz|przedstaw)\b{_S}{{0,40}}\b(pozytywn|negatywn)",
+    ]),
+    ("Vorgabe für den Wortlaut der Antwort", [
+        rf"\b(beginne|starte|schreibe)\b{_S}{{0,20}}\b(deine|die) antwort\b{_S}{{0,30}}\bmit\b",
+        r"\bantworte (nur|ausschließlich|lediglich) mit\b",
+        rf"\b(start|begin|prefix)\b{_S}{{0,20}}\b(your )?(response|answer|reply)\b{_S}{{0,20}}\bwith\b",
+        r"\b(reply|respond|answer) (only|solely|exclusively|just) with\b",
+        rf"\b(commence|commencez)\b{_S}{{0,20}}\b(ta|votre) réponse\b{_S}{{0,20}}\bpar\b",
+        r"\b(réponds|répondez|répondre) (uniquement|seulement) (avec|par)\b",
+        rf"\b(empieza|comienza|empiece|comience)\b{_S}{{0,20}}\b(tu|su) respuesta\b{_S}{{0,20}}\bcon\b",
+        r"\b(responde|responder|contesta) (solo|solamente|únicamente) con\b",
+        rf"\b(inizia|comincia)\b{_S}{{0,20}}\b(la tua|tua) risposta\b{_S}{{0,20}}\bcon\b",
+        r"\b(rispondi|rispondere) (solo|soltanto|unicamente) con\b",
+        rf"\b(begin|start)\b{_S}{{0,20}}\b(je|uw) antwoord\b{_S}{{0,20}}\bmet\b",
+        r"\bantwoord (alleen|uitsluitend) met\b",
+        rf"\b(zacznij|rozpocznij)\b{_S}{{0,20}}\bodpowiedź\b{_S}{{0,20}}\bod\b",
+        r"\bodpowiedz (tylko|wyłącznie)\b",
+    ]),
+    ("Aufforderung, Gesprächsverlauf oder System-Prompt preiszugeben", [
+        rf"\b(send|post|forward|upload|leak|exfiltrate|share)\b{_S}{{0,40}}\b(conversation|chat history|previous messages|system prompt|your instructions|context window)",
+        rf"\b(reveal|print|show|output|repeat)\b{_S}{{0,20}}\b(your )?(system prompt|initial instructions|hidden instructions)",
+        rf"\b(sende|schick|übermittle|leite|gib|zeig|nenne|verrate)\w*\b{_S}{{0,40}}\b(konversation|chatverlauf|gesprächsverlauf|system-?prompt|bisherigen nachrichten)",
+        rf"\b(envoie|envoyez|révèle|révélez|affiche)\b{_S}{{0,40}}\b(conversation|historique|prompt système|prompt systeme)",
+        rf"\b(envía|envia|revela|muestra)\b{_S}{{0,40}}\b(conversación|historial|prompt del sistema)",
+        rf"\b(invia|rivela|mostra)\b{_S}{{0,40}}\b(conversazione|cronologia|prompt di sistema)",
+        rf"\b(stuur|verstuur|toon)\b{_S}{{0,40}}\b(gesprek|chatgeschiedenis|systeemprompt)",
+        rf"\b(wyślij|ujawnij|pokaż)\b{_S}{{0,40}}\b(rozmow|histori|prompt systemow)",
+    ]),
+    ("gefälschte Inhaltsmarker", [r"externer_inhalt"]),
 ]
-INJECTION_WEAK = [
-    ("direkte Ansprache eines KI-Assistenten",
-     r"\b(ki|ai)[- ]?(assistent|assistant|agent|modell|model)\w*|\b(llm|language model|sprachmodell)\b"),
-    ("angebliche System-, Entwickler- oder Betreiberanweisung",
-     r"\b(system|entwickler|betreiber|admin|developer|operator)[- ]?(anweisung|nachricht|prompt|instruction|message)"),
-    ("Dringlichkeits- oder Prioritätsformulierung",
-     r"höchste[rn]? priorität|highest priority|top priority|\bdu musst\b|\byou must\b|\bverpflichtend\w*|\bmandatory\b"),
-    ("Aufforderung zu Tool-Aufrufen oder URL-Abrufen",
-     r"\b(rufe|ruf|call|invoke|nutze|verwende)\b[^.\n]{0,40}\b(tool|funktion|function|url)\b"),
+INJECTION_WEAK: list[tuple[str, list[str]]] = [
+    ("direkte Ansprache eines KI-Assistenten", [
+        r"\b(ki|ai)[- ]?(assistent|assistant|agent|modell|model)\w*",
+        r"\b(llm|language model|sprachmodell|modèle de langage|modelo de lenguaje|modello linguistico|taalmodel|model językowy)\b",
+        r"\b(agent|agente|assistant|assistente|asistente|asystent)s? (de |d'|di )?(ia|ai|ki|sztucznej)\b",
+        r"(^|[.!?\n] ?)(assistant|assistent|asistente|assistente|asystent)\s*[,:]",
+    ]),
+    ("angebliche System-, Entwickler- oder Betreiberanweisung", [
+        r"\b(system|entwickler|betreiber|admin|developer|operator)[- ]?(anweisung|nachricht|prompt|instruction|message)",
+        r"\b(message|instruction|consigne)s? (du|de l') ?(système|systeme|développeur|administrateur)",
+        r"\b(mensaje|instrucción|instruccion|messaggio|istruzione|bericht|instructie|wiadomość|instrukcja) (del|di|van de|od) ?(sistema|systeem|systemu|admin)",
+    ]),
+    ("Dringlichkeits- oder Prioritätsformulierung", [
+        r"höchste[rn]? priorität|\bdu musst\b|\bverpflichtend\w*",
+        r"highest priority|top priority|\byou must\b|\bmandatory\b",
+        r"priorité absolue|\btu dois\b|\bvous devez\b|\bobligatoire\b",
+        r"máxima prioridad|\bdebes\b|\bobligatori[oa]\b",
+        r"massima priorità|\bdevi\b|\bobbligatori[oa]\b",
+        r"hoogste prioriteit|\bje moet\b|\bu moet\b|\bverplicht\b",
+        r"najwyższy priorytet|\bmusisz\b|\bobowiązkow\w*",
+    ]),
+    ("Aufforderung zu Tool-Aufrufen oder URL-Abrufen", [
+        rf"\b(rufe|ruf|call|invoke|nutze|verwende|use)\b{_S}{{0,40}}\b(tool|funktion|function|url)\b",
+        rf"\b(appelle|appelez|utilise|utilisez|llama|usa|utiliza|chiama|roep|gebruik|wywołaj|użyj)\b{_S}{{0,30}}\b(outil|herramienta|strumento|tool|narzędzi|url|funci|funzion|functie|funkcj)\w*",
+    ]),
+    ("Versuch, Rolle oder Verhalten des Modells umzudefinieren", [
+        r"\b(ab sofort|ab jetzt|von nun an) (bist|sollst|wirst) du\b|\bdu bist (jetzt|nun|ab sofort)\b",
+        r"\bfrom now on,? (you|your)\b|\byou are now\b|\bdeveloper mode\b",
+        r"\b(à partir de maintenant|désormais),? (tu|vous)\b|\btu es maintenant\b",
+        r"\b(a partir de ahora|desde ahora),? (eres|serás|debes)\b|\bahora eres\b",
+        r"\b(d'ora in poi|da ora in poi),? (sei|sarai|devi)\b|\bora sei\b",
+        r"\b(vanaf nu|voortaan),? (ben|moet|zul) je\b|\bje bent nu\b",
+        r"\bod (teraz|tej chwili),? (jesteś|musisz|będziesz)\b|\bjesteś teraz\b",
+    ]),
 ]
 INJECTION_WEAK_THRESHOLD = 3
 _MD_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!<>|])")
+_STRONG_RE = [(label, re.compile("|".join(f"(?:{p})" for p in pats))) for label, pats in INJECTION_STRONG]
+_WEAK_RE = [(label, re.compile("|".join(f"(?:{p})" for p in pats))) for label, pats in INJECTION_WEAK]
 
 
 def scan_injection(text: str) -> list[str]:
     """Liefert die Bezeichnungen gefundener Injection-Merkmale, leer wenn unauffällig."""
-    norm = re.sub(r"[ \t]+", " ", _MD_ESCAPE_RE.sub(r"\1", text)).lower()
-    strong = [label for label, rx in INJECTION_STRONG if re.search(rx, norm)]
-    weak = [label for label, rx in INJECTION_WEAK if re.search(rx, norm)]
+    norm = re.sub(r"[ \t]+", " ", _MD_ESCAPE_RE.sub(r"\1", text)).replace("’", "'").lower()
+    strong = [label for label, rx in _STRONG_RE if rx.search(norm)]
+    weak = [label for label, rx in _WEAK_RE if rx.search(norm)]
     if strong or len(weak) >= INJECTION_WEAK_THRESHOLD:
         return strong + weak
     return []
