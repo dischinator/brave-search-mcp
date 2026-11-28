@@ -10,7 +10,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py .
+COPY server.py fetcher.py ./
 
 RUN useradd --create-home --uid 10001 mcp && mkdir /data && chown mcp /data
 USER mcp
